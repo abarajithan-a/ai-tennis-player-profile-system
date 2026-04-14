@@ -1,12 +1,16 @@
+from dotenv import load_dotenv
 import os
+
+load_dotenv()
 
 # ── Config ────────────────────────────────────────────────────
 DB_CONFIG = {
-    "host":     os.getenv("DB_HOST",     "localhost"),
-    "port":     int(os.getenv("DB_PORT", 5432)),
-    "dbname":   os.getenv("DB_NAME",     "tennis"),
-    "user":     os.getenv("DB_USER",     "postgres"),
-    "password": os.getenv("DB_PASSWORD", "postgres"),
+    "host":     os.getenv("POSTGRES_HOST",     "localhost"),
+    "port":     int(os.getenv("POSTGRES_PORT", 5432)),
+    "dbname":   os.getenv("POSTGRES_NAME",     "tennis"),
+    "user":     os.getenv("POSTGRES_USER",     "postgres"),
+    "password": os.getenv("POSTGRES_PASSWORD", ""),
 }
 
-SCHEMA = os.getenv("DB_SCHEMA", "tennis")
+SCHEMA = os.getenv("POSTGRES_SCHEMA", "tennis")
+GOOGLE_AI_API_KEY = os.getenv("GOOGLE_AI_API_KEY", "tennis")

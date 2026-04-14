@@ -105,17 +105,22 @@ CREATE TABLE IF NOT EXISTS {schema}.shot_charting (
 
 -- ── LLM Generated Profiles ────────────────────────────────────
 CREATE TABLE IF NOT EXISTS {schema}.player_profiles (
-    player_profile_hash_id CHAR(32) PRIMARY KEY,
-    player_hash_id  CHAR(32)        NOT NULL REFERENCES {schema}.players(player_hash_id),
-    profile_compute_date DATE       NOT NULL,
-    llm_model       TEXT            NOT NULL,   -- e.g. 'llama3.1:8b'
+    player_profile_hash_id          CHAR(32)        PRIMARY KEY,
+    player_hash_id                  CHAR(32)        NOT NULL REFERENCES {schema}.players(player_hash_id),
+    match_week_monday               DATE            NOT NULL,
+    llm_model                       TEXT            NOT NULL,
     serve_quality_score             NUMERIC(3,1)    CHECK (serve_quality_score BETWEEN 0 AND 10),
+    return_quality_score            NUMERIC(3,1)    CHECK (return_quality_score BETWEEN 0 AND 10),
     forehand_quality_score          NUMERIC(3,1)    CHECK (forehand_quality_score BETWEEN 0 AND 10),
     backhand_quality_score          NUMERIC(3,1)    CHECK (backhand_quality_score BETWEEN 0 AND 10),
-    game_variety_score              NUMERIC(3,1)    CHECK (game_variety_score BETWEEN 0 AND 10),
+    net_play_effectiveness_score    NUMERIC(3,1)    CHECK (net_play_effectiveness_score BETWEEN 0 AND 10),
     clutch_score                    NUMERIC(3,1)    CHECK (clutch_score BETWEEN 0 AND 10),
-    efficiency_score                NUMERIC(3,1)    CHECK (efficiency_score BETWEEN 0 AND 10),   
-    generated_at                    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    efficiency_score                NUMERIC(3,1)    CHECK (efficiency_score BETWEEN 0 AND 10),
+    overall_score                   NUMERIC(3,1)    CHECK (overall_score BETWEEN 0 AND 10),
+    overall_reasoning               TEXT,
+    what_went_well                  TEXT,
+    areas_to_improve                TEXT,
+    generated_at                    TIMESTAMPTZ     NOT NULL DEFAULT NOW()
 );
 
 -- =============================================================
@@ -129,4 +134,4 @@ CREATE INDEX IF NOT EXISTS idx_match_stats_player   ON {schema}.match_stats (pla
 CREATE INDEX IF NOT EXISTS idx_match_stats_result   ON {schema}.match_stats (result);
 CREATE INDEX IF NOT EXISTS idx_shot_charting_date   ON {schema}.shot_charting (match_date);
 CREATE INDEX IF NOT EXISTS idx_profiles_atp_id      ON {schema}.player_profiles (player_hash_id);
-CREATE INDEX IF NOT EXISTS idx_profiles_week        ON {schema}.player_profiles (profile_compute_date);
+CREATE INDEX IF NOT EXISTS idx_profiles_week        ON {schema}.player_profiles (match_week_monday);

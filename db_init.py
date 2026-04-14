@@ -24,6 +24,7 @@ SQL_FILE    = Path(__file__).parent / "tennis_schema.sql"
 
 def db_exists(config) -> bool:
     conn = None  # Initialize to None so conn always exists
+    cur = None
     """Check if database exists by connecting to the default 'postgres' db."""
     try:
         conn = psycopg2.connect(
