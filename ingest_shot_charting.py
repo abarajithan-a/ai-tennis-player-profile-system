@@ -136,7 +136,7 @@ def clean_shots_overview(df: pd.DataFrame) -> pd.DataFrame:
 
     # Generate hash PKs
     df["shot_charting_hash_id"] = df.apply(
-        lambda r: generate_shot_chart_hash(str(r["match_date"]), str(r["player"]).upper()),
+        lambda r: generate_shot_chart_hash(str(r["match_id"]), str(r["player"]).upper()),
         axis=1,
     )
 
@@ -159,7 +159,7 @@ def clean_net_shots(df: pd.DataFrame) -> pd.DataFrame:
 
     # Generate hash PKs
     df["shot_charting_hash_id"] = df.apply(
-        lambda r: generate_shot_chart_hash(str(r["match_date"]), str(r["player"]).upper()),
+        lambda r: generate_shot_chart_hash(str(r["match_id"]), str(r["player"]).upper()),
         axis=1,
     )
 
@@ -227,14 +227,12 @@ def main():
 
         # Download CSVs
         odf = download_shots(OVERVIEW_URL, OVERVIEW_CSV_COLUMNS)
-        #odf = pd.read_csv(r'C:\Users\Abar\Downloads\charting-m-stats-Overview.csv', header=0, index_col=False)
         # Strip whitespace
         odf = odf.apply(lambda col: col.str.strip() if col.dtype == "object" else col)
         odf['match_date'] = pd.to_datetime(odf['match_id'].str.split('-').str[0], format='%Y%m%d')
         odf = odf[odf['set'].str.strip().str.upper() == 'TOTAL']
 
         ndf = download_shots(NET_URL, NET_CSV_COLUMNS)
-        #ndf = pd.read_csv(r'C:\Users\Abar\Downloads\charting-m-stats-NetPoints.csv', header=0, index_col=False)
         # Strip whitespace
         ndf = ndf.apply(lambda col: col.str.strip() if col.dtype == "object" else col)
         ndf['match_date'] = pd.to_datetime(ndf['match_id'].str.split('-').str[0], format='%Y%m%d')
