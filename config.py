@@ -13,4 +13,5 @@ DB_CONFIG = {
 }
 
 SCHEMA = os.getenv("POSTGRES_SCHEMA", "tennis")
-GOOGLE_AI_API_KEY = os.getenv("GOOGLE_AI_API_KEY", "tennis")
+GOOGLE_AI_API_KEY = os.getenv("GOOGLE_AI_API_KEY", "")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
