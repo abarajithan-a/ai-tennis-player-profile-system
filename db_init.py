@@ -126,7 +126,7 @@ def setup():
 
         conn.commit()
 
-        log.info("✓ Tennis DB initialisation complete.")
+        log.info("✓ Tennis DB initialization complete.")
         log.info(f"  Host     : {DB_CONFIG['host']}:{DB_CONFIG['port']}")
         log.info(f"  Database : {DB_CONFIG['dbname']}")
         log.info(f"  Schema   : {SCHEMA}")

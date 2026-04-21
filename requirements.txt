@@ -1,0 +1,13 @@
+# --- Version Constraints (Fixes) ---
+protobuf>=5.26.1,<6.0.0
+
+# --- Primary Libraries ---
+ollama
+google-genai
+groq
+psycopg2-binary
+polars
+pydantic
+python-dotenv
+pandas
+requests

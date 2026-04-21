@@ -1,7 +1,7 @@
 """
 Tennis Player Scoring Pipeline
 - Fetches weekly summarized data for top N players from Postgres
-- Scores players using LLaMA 3.1 8B (via Ollama) and Google Gemini Flash API
+- Scores players using LLaMA 3.1 8B (via Ollama), Google Gemini Flash API and Groq OSS GPT
 - Validates outputs with Pydantic, cleans with Polars, inserts into player_profiles table in DB
 """
 
@@ -14,6 +14,9 @@ import time
 import ollama
 import polars as pl
 import psycopg2
+import asyncio
+from typing import Any
+from groq import Groq
 from google import genai
 from google.genai import types
 from google.genai.errors import ClientError, ServerError
@@ -21,7 +24,7 @@ from datetime import date, datetime
 from pathlib import Path
 from psycopg2 import sql, extras
 from pydantic import BaseModel, Field, ValidationError
-from config import DB_CONFIG, SCHEMA, GOOGLE_AI_API_KEY
+from config import DB_CONFIG, SCHEMA, GOOGLE_AI_API_KEY, GROQ_API_KEY
 
 # ── Logging ───────────────────────────────────────────────────
 logging.basicConfig(
@@ -35,33 +38,55 @@ log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
+PYTHON_MAX_CONCURRENCY=1
+SEMAPHORE = asyncio.Semaphore(PYTHON_MAX_CONCURRENCY)
 SQL_FILE = "llm_input.sql"
 LLM_MODELS = {
-    "llama": {
+    "ollama": {
         "name": "llama3.1:8b",
-        "batch_size": 10,
+        "batch_size": None,       # concurrency handled by asyncio, not batching
         "options": {
             "temperature": 0.1,
-            "num_ctx": 8192,      # input: prompt + all player data
-            "num_predict": 3072   # output: JSON array for batch size
-        }
+            "num_ctx": 2048,      # 900 token prompt + 450 output + 698 buffer
+            "num_predict": 500,   # 450 expected output tokens + 50 margin
+            "num_batch": 512      # Number of tokens to process internally in 1 sweep
+        },
+        "safety_settings": None
     },
     "gemini": {
-        "name": "gemini-3.1-flash-lite-preview", #"gemini-3-flash-preview",
+        "name": "gemini-3-flash-preview", #"gemini-3.1-flash-lite-preview",
         "batch_size": 10,
         "options": {        # Maps to generation config in Google Gemini API
             "temperature": 0.1,
             "top_p": 0.95,
             "top_k": 40,
-            "max_output_tokens": 8192,
-            "response_mime_type": "application/json",  # Forces JSON response            
+            "max_output_tokens": 15000, # To accomodate rare thought tokens spike to 8000
+            "response_mime_type": "application/json",  # Forces JSON response,
+            "thinking_config": {
+                "thinking_level": "medium" #thought tokens on avg between 1500 - 2800,
+            }            
         },
-        "safety_settings" : {
-            "HARM_CATEGORY_HARASSMENT":        "BLOCK_NONE",
-            "HARM_CATEGORY_HATE_SPEECH":       "BLOCK_NONE",
-            "HARM_CATEGORY_SEXUALLY_EXPLICIT": "BLOCK_NONE",
-            "HARM_CATEGORY_DANGEROUS_CONTENT": "BLOCK_NONE",
-        }
+        "safety_settings" : [
+            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+        ]
+    },
+    "groq": {
+        "name": "openai/gpt-oss-120b", # "meta-llama/llama-4-scout-17b-16e-instruct",
+        "batch_size": 4,
+        "options": {
+            "temperature": 0.1,
+            "reasoning_effort": "low",
+            "max_completion_tokens": 2400,
+            "top_p": 0.95,
+            "response_format": {"type": "json_object"},
+        },
+        "safety_settings": None
+        # Formula: Prompt at batch size N ≈ 900 + (N × 550)
+        # max_completion_tokens = 1100 (i.e. Reasoning effort budget for Low) + (N × 220) + 200 (i.e. Buffer)
+        # SUM of input prompt + max_completion_tokens < TPM
     }
 }
 TOP_N_PLAYERS = 100
@@ -69,7 +94,8 @@ TOP_N_PLAYERS = 100
 # API Settings
 # -----------------------------
 
-GOOGLE_RPM = 10 # Requests per minute - Rate Limit
+GOOGLE_RPM = 3 # Requests per minute - Rate Limit
+GROQ_RPM = 1  # conservative free-tier estimate RPM and TPM
 MAX_RETRIES = 3
 
 # -----------------------------
@@ -127,11 +153,11 @@ def fetch_top_players_weekly_data(cur, schema: str) -> list[dict]:
 def insert_player_profiles(
     cur, 
     records: list[dict], 
-    model_label: str
+    model_name: str
 ) -> None:
     """Upsert scored player profiles into player_profile table."""
     if not records:
-        log.warning("No records to insert for model=%s", model_label)
+        log.warning("No records to insert for model=%s", model_name)
         return
 
     # Build column list and placeholders dynamically
@@ -164,74 +190,71 @@ def insert_player_profiles(
 # ---------------------------------------------------------------------------
 SYSTEM_INSTRUCTION = "You are a tennis analytics engine. Return only valid JSON arrays."
 SCORING_INSTRUCTIONS = """
-You are an expert tennis analytics engine. You will receive a batch of tennis players
-with their match statistics for the current week and trailing 4-week averages (prefixed w4_).
-NULL values in w4_ fields indicate no prior data available for that player.
+You are a tennis analytics engine. You will receive players with current week stats and trailing 4-week averages (prefixed w4_). NULL w4_ means no prior data.
 
-Score each player on the following dimensions using a 0.0 to 10.0 scale:
+Score each player from 0.0 to 10.0 on the following:
 
-SCORING DIMENSIONS AND THEIR PRIMARY DRIVERS:
+SCORING DIMENSIONS:
 
 forehand_quality_score:
-  - Primary: forehand_winners, forehand_errors
-  - Context: winners_to_errors_ratio(forehand only), w4_forehand_winners, w4_forehand_errors
+- Use: forehand_winners, forehand_errors
+- Context: winners_to_errors_ratio (forehand), w4_forehand_winners/errors
 
 backhand_quality_score:
-  - Primary: backhand_winners, backhand_errors
-  - Context: winners_to_errors_ratio(backhand only), w4_backhand_winners, w4_backhand_errors
+- Use: backhand_winners, backhand_errors
+- Context: winners_to_errors_ratio (backhand), w4_backhand_winners/errors
 
 serve_quality_score:
-  - Primary: first_serve_in_percent, aces, double_faults
-  - Context: w4_first_serve_in_percent, w4_aces, w4_double_faults
+- Use: first_serve_in_percent, aces, double_faults
+- Context: w4_first_serve_in_percent, w4_aces, w4_double_faults
 
 return_quality_score:
-  - Primary: return_points_won_percent
-  - Context: w4_return_points_won_percent, break_points_saved_percent
+- Use: return_points_won_percent
+- Context: w4_return_points_won_percent, break_points_saved_percent
 
 net_play_effectiveness_score:
-  - Primary: net_win_percent, net_winners, net_errors
-  - Context: w4_net_win_percent, w4_net_winners, w4_net_errors
+- Use: net_win_percent, net_winners, net_errors
+- Context: w4_net_win_percent, w4_net_winners, w4_net_errors
 
 clutch_score:
-  - Primary: break_points_saved_percent, break_points_saved, break_points_faced
-  - Context: w4_break_points_saved_percent
-  - A player who saves a high percentage of break points under pressure scores higher
-  - Penalize players with very few break points faced (small sample)
+- Use: break_points_saved_percent, break_points_saved, break_points_faced
+- Context: w4_break_points_saved_percent
+- High save %% increases score; penalize very low break_points_faced (small sample)
 
 efficiency_score:
-  - Primary: winners_to_errors_ratio, first_serve_in_percent, 
-  - Supporting: net_win_percent, return_points_won_percent, aces, double_faults
-  - Reflects how cleanly and effectively a player wins points across all dimensions
+- Primary: winners_to_errors_ratio, first_serve_in_percent
+- Supporting: net_win_percent, return_points_won_percent, aces, double_faults
+- Reflects overall point-winning efficiency
 
 overall_score:
-  - Holistic rating across all dimensions
-  - Is NOT a simple average
-  - Weight serve_quality and return_quality more heavily as they drive most points
-  - Factor in consistency between current week and w4_ trailing metrics
-  - A player performing significantly above or below their w4_ baseline should
-    have this reflected in the overall_score
+- Holistic rating (NOT average)
+- Weight serve and return more heavily
+- Compare current vs w4_ baseline for consistency
+- Adjust if performance deviates significantly from baseline
 
-GENERAL SCORING GUIDELINES:
-  - Compare (w1_)current week metrics against w4_ trailing metrics for context.
-  - Heavily penalize high double_faults regardless of other metrics
-  - A high winners_to_errors_ratio is the single strongest positive signal
-  - Small match sample (matches_played = 1) should moderate extreme scores
-  - If all w4_ fields are NULL, score purely on current week data
+GENERAL GUIDELINES:
+- Always compare current vs w4_ where available
+- Penalize high double_faults heavily
+- winners_to_errors_ratio is strongest positive signal
+- If matches_played = 1, moderate extreme scores
+- If all w4_ are NULL, use current data only
 
-REASONING GUIDELINES:
-  - what_went_well must reference the single strongest metric or pattern this week
-  - areas_to_improve must reference the single weakest metric or largest drop vs trailing average
-  - Both fields must be specific to the data, never generic statements
-  - Do not repeat the player name inside reasoning fields
-  - Maximum 20 words per reasoning field, hard limit
+REASONING:
+- Provide:
+  - overall_reasoning (one sentence)
+  - what_went_well (strongest metric/pattern)
+  - areas_to_improve (weakest metric or biggest drop vs w4_)
+- Must reference specific metrics (values or clear signals)
+- Do NOT repeat player name
+- Max 20 words per field
 
-IMPORTANT INSTRUCTIONS:
-  - Return ONLY a valid JSON array
-  - No markdown fences, no commentary, no explanation outside the JSON
-  - Every numeric score must be a float between 0.0 and 10.0
-  - Do not add any keys beyond those listed below
-  - Each element must follow this exact shape:
+OUTPUT:
+- Return ONLY a valid JSON array
+- No extra text, markdown, or explanation
+- All scores must be floats between 0.0 and 10.0
+- Do not add extra keys
 
+FORMAT:
 {
   "player_hash_id": "<string>",
   "player_name": "<string>",
@@ -244,9 +267,9 @@ IMPORTANT INSTRUCTIONS:
   "clutch_score": <float>,
   "efficiency_score": <float>,
   "overall_score": <float>,
-  "overall_reasoning": "<one concise sentence explaining the overall score, max 20 words>",
-  "what_went_well": "<max 20 words, specific to this week's strongest metric or pattern>",
-  "areas_to_improve": "<max 20 words, specific to this week's weakest metric or largest drop vs trailing average>"
+  "overall_reasoning": "<max 20 words>",
+  "what_went_well": "<max 20 words>",
+  "areas_to_improve": "<max 20 words>"
 }
 """
 
@@ -255,7 +278,9 @@ def build_prompt(player_batch: list[dict]) -> str:
     return (
         f"{SCORING_INSTRUCTIONS}\n\n"
         f"Player data:\n{player_json}\n\n"
-        "Return ONLY the JSON array. No extra text."
+        f"You MUST return a JSON array with exactly {len(player_batch)} objects.\n"
+        f"Do not stop until all {len(player_batch)} items are processed.\n"
+        f"Return ONLY the JSON array. No extra text."
     )
 
 # ---------------------------------------------------------------------------
@@ -279,17 +304,12 @@ def check_ollama_model(model_name: str) -> None:
             f"Could not connect to Ollama. Is 'ollama serve' running? Error: {exc}"
         ) from exc
 
-def invoke_ollama_chat(
-    model_name: str, 
-    model_options: dict,
-    prompt: str, 
-    batch_index: int
-) -> str:
+def call_ollama_chat(model_name, model_options, player_data):
     """
     Send a prompt to Ollama via ollama.chat and return the response text.
     Ollama keeps the model warm in memory across consecutive calls.
     """
-    log.info("Sending batch %d to Ollama model=%s...", batch_index, model_name)
+    prompt = build_prompt([player_data])
     response = ollama.chat(
         model=model_name,
         messages=[
@@ -303,11 +323,52 @@ def invoke_ollama_chat(
             },
         ],
         options=model_options,
+        keep_alive=-1, # -1 keeps the model pinned in RAM permanently until unloaded
     )
     raw = response["message"]["content"]
-    log.info("Batch %d response received — %d characters.", batch_index, len(raw))
     return raw
 
+async def score_thread(model_name, model_options, player_data):
+    async with SEMAPHORE:
+        try:
+            raw = await asyncio.to_thread(
+                call_ollama_chat,
+                model_name,
+                model_options,
+                player_data,
+            )
+
+            # Only parsing belongs here (NOT normalization)
+            parsed = json.loads(raw)
+            return parsed
+
+        except json.JSONDecodeError:
+            log.error(
+                "[%s] JSON decode failed for player_hash_id=%s | raw=%s",
+                model_name,
+                player_data.get("player_hash_id"),
+                raw[:300] if "raw" in locals() else "N/A",
+                exc_info=True,
+            )
+            return None
+
+        except Exception as e:
+            log.error(
+                "[%s] LLM call failed for player_hash_id=%s",
+                model_name,
+                player_data.get("player_hash_id"),
+                exc_info=True,
+            )
+            return None
+
+async def invoke_ollama(model_name, model_options, players):
+    tasks = [
+        score_thread(model_name, model_options, p)
+        for p in players
+    ]
+
+    results = await asyncio.gather(*tasks)
+    return results
 
 def unload_ollama_model(model_name: str) -> None:
     """
@@ -332,42 +393,122 @@ def unload_ollama_model(model_name: str) -> None:
 # Parsing & Pydantic validation
 # ---------------------------------------------------------------------------
 def extract_json_array(raw: str, batch_index: int) -> list[dict]:
-    """Extract the first JSON array from raw LLM output."""
+    """Extract JSON array from raw LLM output. 
+    Handles both array [...] and single object {...} responses."""
+    
+    # Try array first
     start = raw.find("[")
     end = raw.rfind("]")
-    if start == -1 or end == -1:
-        raise ValueError(
-            f"Batch {batch_index}: No JSON array found in output. "
-            f"Preview: {raw[:300]}"
+    if start != -1 and end != -1:
+        return json.loads(raw[start:end + 1])
+    
+    # Fall back to single object
+    start = raw.find("{")
+    end = raw.rfind("}")
+    if start != -1 and end != -1:
+        obj = json.loads(raw[start:end + 1])
+        return [obj]  # wrap in list for consistent downstream handling
+    
+    raise ValueError(
+        f"Batch {batch_index}: No JSON array or object found in output. "
+        f"Preview: {raw[:300]}"
+    )
+
+def validate_records(
+    raw_output: Any,
+    input_records: list[dict],
+    model_name: str,
+    batch_index: int = 1,
+    strict: bool = True,
+) -> list[dict]:
+    """
+    Universal validator for all LLM outputs.
+
+    Ensures:
+    - Output maps to input size
+    - Each record is valid PlayerScore
+    - Handles dict, list, None safely
+    """
+
+    expected_size = len(input_records)
+
+    # -----------------------------
+    # Normalize output shape
+    # -----------------------------
+    if raw_output is None:
+        log.error("[%s] Batch %d: raw_output is None", model_name, batch_index)
+        return []
+
+    if isinstance(raw_output, dict):
+        parsed_list = [raw_output]
+
+    elif isinstance(raw_output, list):
+        parsed_list = raw_output
+
+    else:
+        raise TypeError(
+            f"[{model_name}] Batch {batch_index}: Unexpected output type {type(raw_output)}"
         )
-    return json.loads(raw[start: end + 1])
 
+    received_size = len(parsed_list)
 
-def validate_batch(raw_list: list[dict], batch_index: int) -> list[dict]:
-    """Validate each item with Pydantic. Log and skip invalid records."""
-    valid = []
-    for item in raw_list:
+    # -----------------------------
+    # Size mismatch handling
+    # -----------------------------
+    if received_size != expected_size:
+        log.warning(
+            "[%s] Batch %d: size mismatch (expected=%d, received=%d)",
+            model_name, batch_index, expected_size, received_size,
+        )
+
+        if strict:
+            raise ValueError(
+                f"[{model_name}] Batch {batch_index}: expected {expected_size}, got {received_size}"
+            )
+
+    # -----------------------------
+    # Validation loop
+    # -----------------------------
+    valid_records = []
+    invalid_count = 0
+
+    for item in parsed_list:
         try:
             score = PlayerScore(**item)
-            valid.append(score.model_dump())
+            valid_records.append(score.model_dump())
+
         except ValidationError as exc:
+            invalid_count += 1
             log.warning(
-                "Validation failed — player_hash_id=%s batch=%d error=%s",
-                item.get("player_hash_id", "?"),
+                "[%s] Batch %d: validation failed for player=%s | %s",
+                model_name,
                 batch_index,
+                item.get("player_hash_id", "?") if isinstance(item, dict) else "?",
                 exc,
             )
-    log.info(
-        "Batch %d validation: %d/%d records passed.",
-        batch_index, len(valid), len(raw_list),
-    )
-    return valid
 
+    # -----------------------------
+    # Final sanity checks
+    # -----------------------------
+    if len(valid_records) == 0:
+        log.error("[%s] Batch %d: all records failed validation", model_name, batch_index)
+
+    log.info(
+        "[%s] Batch %d: valid=%d invalid=%d expected=%d received=%d",
+        model_name,
+        batch_index,
+        len(valid_records),
+        invalid_count,
+        expected_size,
+        received_size,
+    )
+
+    return valid_records
 
 # ---------------------------------------------------------------------------
 # Polars cleanup
 # ---------------------------------------------------------------------------
-def clean_with_polars(records: list[dict], model_label: str) -> list[dict]:
+def clean_with_polars(records: list[dict], model_name: str) -> list[dict]:
     """
     Load validated records into Polars, apply cleanup, return list of dicts
     ready for DB insertion.
@@ -383,10 +524,10 @@ def clean_with_polars(records: list[dict], model_label: str) -> list[dict]:
       - Sort by player_hash_id
     """
     if not records:
-        log.warning("clean_with_polars: no records to clean for model=%s", model_label)
+        log.warning("clean_with_polars: no records to clean for model=%s", model_name)
         return []
 
-    log.info("Cleaning %d records with Polars for model=%s...", len(records), model_label)
+    log.info("Cleaning %d records with Polars for model=%s...", len(records), model_name)
 
     generated_at = datetime.now()
 
@@ -411,7 +552,7 @@ def clean_with_polars(records: list[dict], model_label: str) -> list[dict]:
         # Drop likely bad generations
         .filter(pl.col("overall_score") > 0.0)
         # Add metadata columns
-        .with_columns(pl.lit(model_label).alias("llm_model"))
+        .with_columns(pl.lit(model_name).alias("llm_model"))
         .with_columns(pl.lit(generated_at).alias("generated_at"))
         # Compute md5 hash — build the raw string natively in Polars,
         # then apply hashlib only on the single concatenated string column
@@ -440,137 +581,206 @@ def make_batches(players: list[dict], batch_size: int) -> list[list[dict]]:
     return [players[i: i + batch_size] for i in range(0, len(players), batch_size)]
 
 
-def invoke_api_with_retry(client, model_name, prompt, model_options):
-    for attempt in range(MAX_RETRIES + 1):
-        try:
+def invoke_api_with_retry(client, model_key, model_name, prompt, model_options):
+    def _extract_error_info(e):
+        """Normalize error into (code, message)."""
+        code = (
+            getattr(e, "code", None)
+            or getattr(e, "status_code", None)
+            or getattr(e, "status", None)
+        )
+
+        message = str(e)
+
+        # Try deeper extraction if available
+        if hasattr(e, "response"):
+            try:
+                message = str(e.response)
+                code = code or e.response.get("status")
+            except Exception:
+                pass
+
+        return code, message
+
+    def _call_model():
+        """Dispatch per provider."""
+        if model_key == "gemini":
             response = client.models.generate_content(
                 model=model_name,
                 contents=prompt,
                 config=model_options,
             )
 
-            return response
+            return response.text #response.usage_metadata for tokens consumed
 
-        except ClientError as e:
-            code = getattr(e, "code", None) \
-                    or getattr(e, "status_code", None) \
-                    or getattr(e, "response", {}).get("status")
+        elif model_key == "groq":
+            response = client.chat.completions.create(
+                model=model_name,
+                messages=[
+                    {"role": "system", "content": SYSTEM_INSTRUCTION},
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=model_options.get("temperature", 0.1),
+                max_completion_tokens=model_options.get("max_completion_tokens", 2048),
+                top_p=model_options.get("top_p", 0.95),
+                reasoning_effort=model_options.get("reasoning_effort", "low"),
+                response_format=model_options.get("response_format", {"type": "json_object"})
+            )
+            return response.choices[0].message.content
 
-            if code == 429:  # Rate limit / quota exceeded
+        else:
+            raise ValueError(f"Unsupported model_key: {model_key}")
+
+    for attempt in range(MAX_RETRIES + 1):
+        try:
+            return _call_model()
+
+        except Exception as e:
+            code, message = _extract_error_info(e)
+
+            # -----------------------------
+            # Retryable errors
+            # -----------------------------
+            if code in (429, 500, 503) or any(
+                k in message.lower()
+                for k in ["rate limit", "quota", "timeout", "temporarily unavailable"]
+            ):
                 if attempt == MAX_RETRIES:
                     raise
-                wait = 2 ** attempt * 10
-                print(f"[429] Rate limited. Retrying in {wait}s... (attempt {attempt+1}/{MAX_RETRIES})")
-                time.sleep(wait)
 
-            elif code == 400:  # Bad request — not retryable
-                log.info(f"[400] Bad request (check your prompt/parameters): {e}")
+                wait = 2 ** attempt * 5
+                log.info(
+                    "[%s] Retryable error (code=%s). Retrying in %ss... (%d/%d)",
+                    model_key, code, wait, attempt + 1, MAX_RETRIES
+                )
+                time.sleep(wait)
+                continue
+
+            # -----------------------------
+            # Non-retryable errors
+            # -----------------------------
+            if code in (400, 401, 403, 404):
+                log.error(
+                    "[%s] Non-retryable error (code=%s): %s",
+                    model_key, code, message
+                )
                 raise
 
-            elif code == 401 or code == 403:  # Auth errors — not retryable
-                log.info(f"[{code}] Auth error (check your API key/permissions): {e}")
-                raise
-
-            elif code == 404:  # Model not found — not retryable
-                log.info(f"[404] Model not found (check model name): {e}")
-                raise
-
-            else:
-                if attempt == MAX_RETRIES:
-                    raise
-                wait = 2 ** attempt * 5
-                log.info(f"[{code}] Client error. Retrying in {wait}s... (attempt {attempt+1}/{MAX_RETRIES})")
-                time.sleep(wait)
-
-        except ServerError as e:
-            code = getattr(e, "code", None) \
-                    or getattr(e, "status_code", None) \
-                    or getattr(e, "response", {}).get("status")
-
-            if code == 503:  # High demand / unavailable — retryable
-                if attempt == MAX_RETRIES:
-                    raise
-                wait = 2 ** attempt * 5  # 5s, 10s, 20s
-                log.info(f"[503] Model unavailable (high demand). Retrying in {wait}s... (attempt {attempt+1}/{MAX_RETRIES})")
-                time.sleep(wait)
-
-            elif code == 500:  # Internal server error — retryable
-                if attempt == MAX_RETRIES:
-                    raise
-                wait = 2 ** attempt * 5
-                log.info(f"[500] Internal server error. Retrying in {wait}s... (attempt {attempt+1}/{MAX_RETRIES})")
-                time.sleep(wait)
-
-            else:
-                if attempt == MAX_RETRIES:
-                    raise
-                wait = 2 ** attempt * 5
-                log.info(f"[{code}] Server error. Retrying in {wait}s... (attempt {attempt+1}/{MAX_RETRIES})")
-                time.sleep(wait)
-
-        except Exception as e:  # Unexpected errors (network, timeout, etc.)
+            # -----------------------------
+            # Unknown errors → retry
+            # -----------------------------
             if attempt == MAX_RETRIES:
                 raise
+
             wait = 2 ** attempt * 5
-            log.info(f"[UNKNOWN] Unexpected error: {e}. Retrying in {wait}s... (attempt {attempt+1}/{MAX_RETRIES})")
+            log.warning(
+                "[%s] Unknown error (code=%s). Retrying in %ss... (%d/%d) | %s",
+                model_key, code, wait, attempt + 1, MAX_RETRIES, message
+            )
             time.sleep(wait)
 
 
-def run_model_pipeline(
+async def run_model_pipeline(
     model_key: str,
-    model_name: str,
-    model_options: dict,
-    safety_settings: dict,
-    batches: list[list[dict]],
+    model_cfg: dict,
+    input_data: list[dict],
 ) -> list[dict]:
     """
     Run all batches through llm models.
     Ollama keeps the model warm across calls — no manual load needed.
     Returns all validated records across all batches.
     """
-    log.info("=== Starting %s (%s) — %d batches ===", model_key, model_name, len(batches))
     all_records: list[dict] = []
 
-    if model_key == "llama":
+    # Extract LLM Config Info
+    model_name = model_cfg["name"]
+    batch_size = model_cfg["batch_size"]
+    model_options = model_cfg.get("options")
+    model_safety_settings = model_cfg.get("safety_settings")
+
+    log.info("=== Starting %s (%s) ===", model_key, model_name)
+
+    if model_key == "ollama":
         check_ollama_model(model_name)
-    elif model_key == "gemini":
-        client = genai.Client(api_key=GOOGLE_AI_API_KEY)
-
-        GENERATION_CONFIG = types.GenerateContentConfig(
-            **model_options,
-            safety_settings=[
-                types.SafetySetting(category=k, threshold=v)
-                for k, v in safety_settings.items()
-            ],
-            system_instruction=SYSTEM_INSTRUCTION,
+        raw_output = await invoke_ollama(model_name, model_options, input_data)
+        raw_output = [r for r in raw_output if r is not None]
+        #Flatten the list of lists (since the prompt is  batch of 1)
+        raw_output = [
+            item
+            for sublist in raw_output if isinstance(sublist, list)
+            for item in sublist if isinstance(item, dict)
+        ]
+        all_records = validate_records(
+            raw_output=raw_output,
+            input_records=input_data,
+            model_name=model_name,
+            strict=False,  # individual failures already handled in score_thread
         )
-
-    for idx, batch in enumerate(batches, start=1):
         log.info(
-            "[%s] Batch %d/%d — %d players...",
-            model_key, idx, len(batches), len(batch),
+            "[%s] complete. Total: %d records.",
+            model_key, len(all_records),
         )
-        try:
-            prompt = build_prompt(batch)
-            if model_key == "llama":
-                raw_output = invoke_ollama_chat(model_name, model_options, prompt, idx)
-            elif model_key == "gemini":
-                response = invoke_api_with_retry(client, model_name, prompt, model_options)
-                raw_output = response.text
-                time.sleep(60.0 / GOOGLE_RPM) # Manage rate limit
+    else:
+        if model_key == "gemini":
+            client = genai.Client(api_key=GOOGLE_AI_API_KEY)
 
-            raw_list = extract_json_array(raw_output, idx)
-            valid_records = validate_batch(raw_list, idx)
-            all_records.extend(valid_records)
+            GENERATION_CONFIG = types.GenerateContentConfig(
+                temperature=model_options["temperature"],
+                top_p=model_options["top_p"],
+                top_k=model_options["top_k"],
+                max_output_tokens=model_options["max_output_tokens"],
+                response_mime_type=model_options["response_mime_type"],  
+                thinking_config=types.ThinkingConfig(
+                    thinking_level=model_options.get("thinking_config", {}).get("thinking_level", "low").lower()
+                ),
+                safety_settings=[types.SafetySetting(category=s["category"], threshold=s["threshold"]) for s in model_safety_settings],
+                system_instruction=SYSTEM_INSTRUCTION,
+            )
+
+        elif model_key == "groq":
+            client = Groq(api_key=GROQ_API_KEY)
+
+
+        # Split based on batch size
+        batches = make_batches(input_data, batch_size)
+
+        log.info(
+            "Model: %s | Players: %d | Batch size: %d | Total batches: %d",
+            model_name, len(input_data), batch_size, len(batches),
+        )
+
+        for idx, batch in enumerate(batches, start=1):
             log.info(
-                "[%s] Batch %d complete. Running total: %d records.",
-                model_key, idx, len(all_records),
+                "[%s] Batch %d/%d — %d players...",
+                model_key, idx, len(batches), len(batch),
             )
-        except Exception as exc:
-            log.error(
-                "[%s] Batch %d failed — skipping. Error: %s",
-                model_key, idx, exc, exc_info=True,
-            )
+            try:
+                prompt = build_prompt(batch)
+                if model_key == "gemini":
+                    raw_output = invoke_api_with_retry(client, model_key, model_name, prompt, GENERATION_CONFIG)
+                    time.sleep(60.0 / GOOGLE_RPM) # Manage rate limit
+                elif model_key == "groq":
+                    raw_output = invoke_api_with_retry(client, model_key, model_name, prompt, model_options)
+                    time.sleep(60.0 / GROQ_RPM) # Manage rate limit
+
+                raw_list = extract_json_array(raw_output, idx)
+                valid_records = validate_records(
+                    raw_output=raw_list,
+                    input_records=batch,
+                    model_name=model_name,
+                    batch_index=idx,
+                )
+
+                all_records.extend(valid_records)
+                log.info(
+                    "[%s] Batch %d complete. Running total: %d records.",
+                    model_key, idx, len(all_records),
+                )
+            except Exception as exc:
+                log.error(
+                    "[%s] Batch %d failed — skipping. Error: %s",
+                    model_key, idx, exc, exc_info=True,
+                )
 
     log.info("=== %s finished. Total valid records: %d ===", model_key, len(all_records))
     return all_records
@@ -578,9 +788,7 @@ def run_model_pipeline(
 # ---------------------------------------------------------------------------
 # Main pipeline
 # ---------------------------------------------------------------------------
-def main() -> None:
-    log.info("=== Tennis Player Scoring Pipeline START ===")
-
+async def main() -> None:
     conn = None
     cur = None
     try:
@@ -596,71 +804,34 @@ def main() -> None:
         cur = conn.cursor(cursor_factory=extras.RealDictCursor)
 
         # 1. Fetch weekly data from Postgres
-        players = fetch_top_players_weekly_data(cur, SCHEMA)
+        players_data = fetch_top_players_weekly_data(cur, SCHEMA)
 
-        if not players:
+        if not players_data:
             log.error("No player data returned from DB. Exiting.")
             return
 
-        # ----------------------------------------------------------------
-        # 2. LLaMA 3.1 8B — run all batches via Ollama
-        # ----------------------------------------------------------------
-        llm_model_key = "llama"
-        llm_model_name = LLM_MODELS[llm_model_key]["name"]
-        llm_batch_size = LLM_MODELS[llm_model_key]["batch_size"]
-        llm_model_options = LLM_MODELS[llm_model_key]["options"]
-        # Split based on batch size
-        batches = make_batches(players, llm_batch_size)
-        log.info(
-            "Players: %d | Batch size: %d | Total batches: %d",
-            len(players), llm_batch_size, len(batches),
-        )
+        for llm_model_key, llm_model_cfg in LLM_MODELS.items():
+            llm_model_name = llm_model_cfg["name"]
+            validated_output = await run_model_pipeline(
+                model_key=llm_model_key,
+                model_cfg=llm_model_cfg,
+                input_data=players_data
+            )
 
-        llama_raw = run_model_pipeline(
-            model_key=llm_model_key,
-            model_name=llm_model_name,
-            model_options=llm_model_options,
-            safety_settings=None,
-            batches=batches,
-        )
+            # Polars cleanup + DB insert
+            clean_df = clean_with_polars(validated_output, model_name=llm_model_name)
+            insert_player_profiles(cur, clean_df, model_name=llm_model_name)
 
-        # Evict LLaMA from RAM
-        unload_ollama_model(llm_model_name)
+            log.info(
+                "Inserted/updated %d rows for model=%s",
+                len(clean_df),
+                llm_model_name,
+            )
 
-        # Polars cleanup + DB insert for LLaMA
-        llama_clean = clean_with_polars(llama_raw, model_label=llm_model_name)
-        insert_player_profiles(cur, llama_clean, model_label=llm_model_name)
-        log.info("Inserted/updated %d rows for model=%s", len(llama_clean), llm_model_name)
-
-        # ----------------------------------------------------------------
-        # 3. Gemini Flash — run all batches via Gemini API
-        # ----------------------------------------------------------------
-        llm_model_key = "gemini"
-        llm_model_name = LLM_MODELS[llm_model_key]["name"]
-        llm_batch_size = LLM_MODELS[llm_model_key]["batch_size"]
-        llm_model_options = LLM_MODELS[llm_model_key]["options"]
-        llm_model_safety_settings = LLM_MODELS[llm_model_key]["safety_settings"]
-        # Split based on batch size
-        batches = make_batches(players, llm_batch_size)
-        log.info(
-            "Players: %d | Batch size: %d | Total batches: %d",
-            len(players), llm_batch_size, len(batches),
-        )
-
-        gemini_raw = run_model_pipeline(
-            model_key=llm_model_key,
-            model_name=llm_model_name,
-            model_options=llm_model_options,
-            safety_settings=llm_model_safety_settings,
-            batches=batches,
-        )
-
-        # Polars cleanup + DB insert for Gemini
-        gemini_clean = clean_with_polars(gemini_raw, model_label=llm_model_name)
-        insert_player_profiles(cur, gemini_clean, model_label=llm_model_name)
+            time.sleep(15) # Wait to free up resources before starting next model
+            log.info("=" * 50)
 
         conn.commit()
-        log.info("Inserted/updated %d rows for model=%s", len(gemini_clean), llm_model_name)
 
         elapsed = int((datetime.now() - start).total_seconds())
         log.info(f"Invoke LLMs — complete ({elapsed}s)")
@@ -687,4 +858,4 @@ def main() -> None:
         gc.collect()
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
