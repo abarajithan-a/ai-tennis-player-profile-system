@@ -34,21 +34,22 @@ log = logging.getLogger(__name__)
 BASE = Path(__file__).parent
 
 STEPS = [
-    {"name": "DB Initialization",               "script": BASE / "db_init.py"},
-    {"name": "DB Ingest Players",               "script": BASE / "ingest_players.py"},
-    {"name": "DB Ingest Player Rankings",       "script": BASE / "ingest_rankings.py"},
-    {"name": "DB Ingest Matches and Stats",     "script": BASE / "ingest_matches_stats.py"},
-    {"name": "DB Ingest Shot Chart",            "script": BASE / "ingest_shot_charting.py"},
-    {"name": "Invoke LLM",                      "script": BASE / "invoke_llm.py"},    
+    {"name": "DB Initialization", "script": BASE / "db_init.py"},
+    {"name": "DB Ingest Players", "script": BASE / "ingest_players.py"},
+    {"name": "DB Ingest Player Rankings", "script": BASE / "ingest_rankings.py"},
+    {"name": "DB Ingest Matches and Stats", "script": BASE / "ingest_matches_stats.py"},
+    {"name": "DB Ingest Shot Chart", "script": BASE / "ingest_shot_charting.py"},
+    {"name": "Invoke LLM", "script": BASE / "invoke_llm.py"},
 ]
 
 
 # ── Runner ────────────────────────────────────────────────────
 
+
 def run_step(step: dict) -> None:
     """Run a single pipeline step. Raises on failure."""
     script = step["script"]
-    name   = step["name"]
+    name = step["name"]
 
     if not script.exists():
         raise FileNotFoundError(f"Script not found: {script}")
@@ -58,21 +59,20 @@ def run_step(step: dict) -> None:
 
     result = subprocess.run(
         [sys.executable, str(script)],
-        capture_output=False,   # stream stdout/stderr directly to console
+        capture_output=False,  # stream stdout/stderr directly to console
         text=True,
     )
 
     elapsed = int((datetime.now() - start).total_seconds())
     if result.returncode != 0:
-        raise RuntimeError(
-            f"Step '{name}' failed with exit code {result.returncode}"
-        )
+        raise RuntimeError(f"Step '{name}' failed with exit code {result.returncode}")
 
     log.info(f"Completed step: {name} ({elapsed}s)")
     log.info("#" * 50)
 
 
 # ── Main ──────────────────────────────────────────────────────
+
 
 def main():
     total = len(STEPS)

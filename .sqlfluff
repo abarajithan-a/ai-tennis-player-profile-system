@@ -30,6 +30,8 @@ capitalisation_policy = lower
 
 [sqlfluff:rules:capitalisation.functions]
 capitalisation_policy = upper
+# Catches functions SQLFluff misclassifies as identifiers (e.g. generate_series)
+extended_capitalisation_policy = upper
 
 [sqlfluff:rules:capitalisation.literals]
 capitalisation_policy = upper

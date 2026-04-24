@@ -37,10 +37,11 @@ RANKINGS_URL = (
     "https://raw.githubusercontent.com/JeffSackmann/"
     "tennis_atp/master/atp_rankings_current.csv"
 )
-CSV_COLUMNS  = ["ranking_date", "rank", "atp_id", "ranking_points"]
+CSV_COLUMNS = ["ranking_date", "rank", "atp_id", "ranking_points"]
 
 
 # ── Helpers ───────────────────────────────────────────────────
+
 
 def make_player_hash(atp_id: str) -> str:
     return hashlib.md5(str(atp_id).encode()).hexdigest()
@@ -87,7 +88,7 @@ def clean_rankings(df: pd.DataFrame) -> pd.DataFrame:
     ).dt.date
 
     # Numeric fields
-    df["rank"]           = pd.to_numeric(df["rank"],           errors="coerce")
+    df["rank"] = pd.to_numeric(df["rank"], errors="coerce")
     df["ranking_points"] = pd.to_numeric(df["ranking_points"], errors="coerce")
 
     # Drop rows missing critical fields
@@ -132,8 +133,10 @@ def insert_rankings(cur, schema: str, df: pd.DataFrame) -> int:
 
 # ── Main ──────────────────────────────────────────────────────
 
+
 def main():
     conn = None  # Initialize to None so conn always exists
+    cur = None
     try:
         log.info("=" * 50)
         log.info("Ingest Rankings — starting")
@@ -152,7 +155,9 @@ def main():
         if last_date is None:
             log.info("No rankings in DB — first run, ingesting full 2020s history.")
         else:
-            log.info(f"Last ingested ranking date: {last_date} — ingesting new records only.")
+            log.info(
+                f"Last ingested ranking date: {last_date} — ingesting new records only."
+            )
 
         # Download
         df = download_rankings(RANKINGS_URL)
@@ -165,7 +170,7 @@ def main():
         if last_date:
             df = df[df["ranking_date"] > last_date]
             log.info(f"New records since {last_date}: {len(df):,}")
-        
+
         if df.empty:
             log.info("No new rankings to insert.")
             sys.exit(0)
@@ -180,10 +185,10 @@ def main():
         log.info(f"Records to insert: {len(df):,}")
 
         # Chunked inserts with progress logging
-        chunk_size  = 50_000
-        total       = 0
+        chunk_size = 50_000
+        total = 0
         for i in range(0, len(df), chunk_size):
-            chunk = df.iloc[i: i + chunk_size]
+            chunk = df.iloc[i : i + chunk_size]
             total += insert_rankings(cur, SCHEMA, chunk)
             conn.commit()
             log.info(f"  Inserted {total:,} / {len(df):,} records...")
@@ -198,7 +203,7 @@ def main():
         # Handle database-specific or general errors
         log.info("Error Occurred!", e)
         if conn:
-            conn.rollback() # Rollback in case of transaction failure
+            conn.rollback()  # Rollback in case of transaction failure
 
     finally:
         # Ensure resources are closed
@@ -207,6 +212,7 @@ def main():
 
         if conn is not None:
             conn.close()
+
 
 if __name__ == "__main__":
     main()

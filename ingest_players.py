@@ -34,14 +34,23 @@ log = logging.getLogger(__name__)
 
 # ── Config ────────────────────────────────────────────────────
 PLAYERS_URL = (
-    "https://raw.githubusercontent.com/JeffSackmann/"
-    "tennis_atp/master/atp_players.csv"
+    "https://raw.githubusercontent.com/JeffSackmann/tennis_atp/master/atp_players.csv"
 )
 
-CSV_COLUMNS = ["atp_id", "first_name", "last_name", "hand", "dob", "country_code", "height_cm", "wikidata_id"]
+CSV_COLUMNS = [
+    "atp_id",
+    "first_name",
+    "last_name",
+    "hand",
+    "dob",
+    "country_code",
+    "height_cm",
+    "wikidata_id",
+]
 
 
 # ── Helpers ───────────────────────────────────────────────────
+
 
 def make_player_hash(atp_id: str) -> str:
     """MD5 hash of atp_id — stable, deterministic PK."""
@@ -114,7 +123,7 @@ def insert_players(cur, schema: str, df: pd.DataFrame) -> int:
             str(row["country_code"])[:3] if pd.notna(row["country_code"]) else None,
             int(row["height_cm"]) if pd.notna(row["height_cm"]) else None,
         )
-        for _, row in df.iterrows()   # iterrows gives named access, not positional
+        for _, row in df.iterrows()  # iterrows gives named access, not positional
     ]
 
     execute_values(
@@ -134,8 +143,10 @@ def insert_players(cur, schema: str, df: pd.DataFrame) -> int:
 
 # ── Main ──────────────────────────────────────────────────────
 
+
 def main():
     conn = None  # Initialize to None so conn always exists
+    cur = None
     try:
         log.info("=" * 50)
         log.info("Ingest Players — starting")
@@ -178,7 +189,7 @@ def main():
         # Handle database-specific or general errors
         log.info("Error Occurred!", e)
         if conn:
-            conn.rollback() # Rollback in case of transaction failure
+            conn.rollback()  # Rollback in case of transaction failure
 
     finally:
         # Ensure resources are closed
