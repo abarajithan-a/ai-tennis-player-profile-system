@@ -17,10 +17,11 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 # ── Config ────────────────────────────────────────────────────
-GRANTEE     = os.getenv("DB_GRANTEE", "postgres")   # change to app user if needed
-SQL_FILE    = Path(__file__).parent / "tennis_schema.sql"
+GRANTEE = os.getenv("DB_GRANTEE", "postgres")  # change to app user if needed
+SQL_FILE = Path(__file__).parent / "tennis_schema.sql"
 
 # ── Helpers ───────────────────────────────────────────────────
+
 
 def db_exists(config) -> bool:
     conn = None  # Initialize to None so conn always exists
@@ -32,11 +33,13 @@ def db_exists(config) -> bool:
             port=config["port"],
             user=config["user"],
             password=config["password"],
-            dbname="postgres"
+            dbname="postgres",
         )
         conn.autocommit = True
         with conn.cursor() as cur:
-            cur.execute("SELECT 1 FROM pg_database WHERE datname = %s", (config["dbname"],))
+            cur.execute(
+                "SELECT 1 FROM pg_database WHERE datname = %s", (config["dbname"],)
+            )
             return cur.fetchone() is not None
 
     except Exception as e:
@@ -59,11 +62,13 @@ def create_db(config) -> None:
         port=config["port"],
         user=config["user"],
         password=config["password"],
-        dbname="postgres"
+        dbname="postgres",
     )
     conn.autocommit = True
     with conn.cursor() as cur:
-        cur.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(config["dbname"])))
+        cur.execute(
+            sql.SQL("CREATE DATABASE {}").format(sql.Identifier(config["dbname"]))
+        )
     conn.close()
 
 
@@ -80,6 +85,7 @@ def load_sql(path: Path, schema: str) -> str:
 
 
 # ── Main ──────────────────────────────────────────────────────
+
 
 def setup():
 
@@ -99,11 +105,9 @@ def setup():
         conn.autocommit = False
         cur = conn.cursor()
 
-    # 2. Schema + tables (connect to target DB now)
+        # 2. Schema + tables (connect to target DB now)
         if not schema_exists(cur, SCHEMA):
-            cur.execute(
-                sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(SCHEMA))
-            )
+            cur.execute(sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(SCHEMA)))
             log.info(f"[+] Schema '{SCHEMA}' created.")
         else:
             log.info(f"[=] Schema '{SCHEMA}' already exists.")
@@ -112,12 +116,11 @@ def setup():
         for stmt in (
             sql.SQL("GRANT ALL PRIVILEGES ON SCHEMA {} TO {}"),
             sql.SQL("ALTER DEFAULT PRIVILEGES IN SCHEMA {} GRANT ALL ON TABLES TO {}"),
-            sql.SQL("ALTER DEFAULT PRIVILEGES IN SCHEMA {} GRANT ALL ON SEQUENCES TO {}"),
+            sql.SQL(
+                "ALTER DEFAULT PRIVILEGES IN SCHEMA {} GRANT ALL ON SEQUENCES TO {}"
+            ),
         ):
-            cur.execute(stmt.format(
-                sql.Identifier(SCHEMA),
-                sql.Identifier(GRANTEE)
-            ))
+            cur.execute(stmt.format(sql.Identifier(SCHEMA), sql.Identifier(GRANTEE)))
         log.info(f"[+] Privileges granted to '{GRANTEE}'.")
 
         # Tables + indexes from SQL file
@@ -132,8 +135,12 @@ def setup():
         log.info(f"  Schema   : {SCHEMA}")
         log.info(f" Tables created:")
         tables = [
-            "players", "rankings", "matches",
-            "match_stats", "shot_charting", "player_profiles"
+            "players",
+            "rankings",
+            "matches",
+            "match_stats",
+            "shot_charting",
+            "player_profiles",
         ]
         for t in tables:
             log.info(f"  └── {SCHEMA}.{t}")
@@ -149,6 +156,7 @@ def setup():
 
         if conn is not None:
             conn.close()
+
 
 if __name__ == "__main__":
     setup()

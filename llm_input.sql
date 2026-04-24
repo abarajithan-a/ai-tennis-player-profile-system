@@ -17,7 +17,7 @@ next_monday AS (
     SELECT MIN(scw.week_monday) AS next_match_week_monday
     FROM shot_charting_weeks AS scw
     CROSS JOIN profiler_date AS pd
-    WHERE scw.week_monday > COALESCE(pd.max_profile_week_monday, DATE '2025-02-24')
+    WHERE scw.week_monday > COALESCE(pd.max_profile_week_monday, DATE '2024-12-30')
 ),
 
 player_ranking AS (

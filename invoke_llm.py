@@ -38,43 +38,43 @@ log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
-PYTHON_MAX_CONCURRENCY=1
+PYTHON_MAX_CONCURRENCY = 1
 SEMAPHORE = asyncio.Semaphore(PYTHON_MAX_CONCURRENCY)
 SQL_FILE = "llm_input.sql"
 LLM_MODELS = {
     "ollama": {
         "name": "llama3.1:8b",
-        "batch_size": None,       # concurrency handled by asyncio, not batching
+        "batch_size": None,  # concurrency handled by asyncio, not batching
         "options": {
             "temperature": 0.1,
-            "num_ctx": 2048,      # 900 token prompt + 450 output + 698 buffer
-            "num_predict": 500,   # 450 expected output tokens + 50 margin
-            "num_batch": 512      # Number of tokens to process internally in 1 sweep
+            "num_ctx": 2048,  # 900 token prompt + 450 output + 698 buffer
+            "num_predict": 500,  # 450 expected output tokens + 50 margin
+            "num_batch": 512,  # Number of tokens to process internally in 1 sweep
         },
-        "safety_settings": None
+        "safety_settings": None,
     },
     "gemini": {
-        "name": "gemini-3-flash-preview", #"gemini-3.1-flash-lite-preview",
+        "name": "gemini-3-flash-preview",  # "gemini-3.1-flash-lite-preview",
         "batch_size": 10,
-        "options": {        # Maps to generation config in Google Gemini API
+        "options": {  # Maps to generation config in Google Gemini API
             "temperature": 0.1,
             "top_p": 0.95,
             "top_k": 40,
-            "max_output_tokens": 15000, # To accomodate rare thought tokens spike to 8000
+            "max_output_tokens": 15000,  # To accomodate rare thought tokens spike to 8000
             "response_mime_type": "application/json",  # Forces JSON response,
             "thinking_config": {
-                "thinking_level": "medium" #thought tokens on avg between 1500 - 2800,
-            }            
+                "thinking_level": "medium"  # thought tokens on avg between 1500 - 2800,
+            },
         },
-        "safety_settings" : [
+        "safety_settings": [
             {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
             {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
             {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
             {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
-        ]
+        ],
     },
     "groq": {
-        "name": "openai/gpt-oss-120b", # "meta-llama/llama-4-scout-17b-16e-instruct",
+        "name": "openai/gpt-oss-120b",  # "meta-llama/llama-4-scout-17b-16e-instruct",
         "batch_size": 4,
         "options": {
             "temperature": 0.1,
@@ -83,18 +83,18 @@ LLM_MODELS = {
             "top_p": 0.95,
             "response_format": {"type": "json_object"},
         },
-        "safety_settings": None
+        "safety_settings": None,
         # Formula: Prompt at batch size N ≈ 900 + (N × 550)
         # max_completion_tokens = 1100 (i.e. Reasoning effort budget for Low) + (N × 220) + 200 (i.e. Buffer)
         # SUM of input prompt + max_completion_tokens < TPM
-    }
+    },
 }
 TOP_N_PLAYERS = 100
 # -----------------------------
 # API Settings
 # -----------------------------
 
-GOOGLE_RPM = 3 # Requests per minute - Rate Limit
+GOOGLE_RPM = 3  # Requests per minute - Rate Limit
 GROQ_RPM = 1  # conservative free-tier estimate RPM and TPM
 MAX_RETRIES = 3
 
@@ -102,16 +102,25 @@ MAX_RETRIES = 3
 # DB Columns
 # -----------------------------
 SCORE_COLUMNS = [
-    "serve_quality_score", "return_quality_score", "forehand_quality_score", 
-    "backhand_quality_score", "net_play_effectiveness_score", "clutch_score", 
-    "efficiency_score", "overall_score",
+    "serve_quality_score",
+    "return_quality_score",
+    "forehand_quality_score",
+    "backhand_quality_score",
+    "net_play_effectiveness_score",
+    "clutch_score",
+    "efficiency_score",
+    "overall_score",
 ]
 
 REASONING_COLUMNS = ["overall_reasoning", "what_went_well", "areas_to_improve"]
 
-PLAYER_PROFILE_COLUMNS = [
-    "player_profile_hash_id", "player_hash_id", "match_week_monday", "llm_model"
-] + SCORE_COLUMNS + REASONING_COLUMNS + ["generated_at"]
+PLAYER_PROFILE_COLUMNS = (
+    ["player_profile_hash_id", "player_hash_id", "match_week_monday", "llm_model"]
+    + SCORE_COLUMNS
+    + REASONING_COLUMNS
+    + ["generated_at"]
+)
+
 
 # ---------------------------------------------------------------------------
 # Pydantic schema
@@ -132,6 +141,7 @@ class PlayerScore(BaseModel):
     what_went_well: str
     areas_to_improve: str
 
+
 # ---------------------------------------------------------------------------
 # DB helpers
 # ---------------------------------------------------------------------------
@@ -140,9 +150,7 @@ def fetch_top_players_weekly_data(cur, schema: str) -> list[dict]:
     query_template = Path(SQL_FILE).read_text()
 
     # Inject schema (identifier)
-    query = query_template.format(
-        schema=sql.Identifier(schema).as_string(cur)
-    )
+    query = query_template.format(schema=sql.Identifier(schema).as_string(cur))
 
     # Filter Top N players
     cur.execute(query, {"top_n_players": TOP_N_PLAYERS})
@@ -150,14 +158,11 @@ def fetch_top_players_weekly_data(cur, schema: str) -> list[dict]:
     log.info("Fetched %d player records.", len(rows))
     return rows
 
-def insert_player_profiles(
-    cur, 
-    records: list[dict], 
-    model_name: str
-) -> None:
+
+def insert_player_profiles(cur, records: list[dict], model_name: str) -> None:
     """Upsert scored player profiles into player_profile table."""
     if not records:
-        log.warning("No records to insert for model=%s", model_name)
+        log.warning("No records to insert DB for model=%s", model_name)
         return
 
     # Build column list and placeholders dynamically
@@ -184,6 +189,7 @@ def insert_player_profiles(
     """
 
     extras.execute_batch(cur, upsert_sql, records, page_size=50)
+
 
 # ---------------------------------------------------------------------------
 # Prompt builder
@@ -273,6 +279,7 @@ FORMAT:
 }
 """
 
+
 def build_prompt(player_batch: list[dict]) -> str:
     player_json = json.dumps(player_batch, indent=2, default=str)
     return (
@@ -282,6 +289,7 @@ def build_prompt(player_batch: list[dict]) -> str:
         f"Do not stop until all {len(player_batch)} items are processed.\n"
         f"Return ONLY the JSON array. No extra text."
     )
+
 
 # ---------------------------------------------------------------------------
 # Ollama inference
@@ -304,6 +312,7 @@ def check_ollama_model(model_name: str) -> None:
             f"Could not connect to Ollama. Is 'ollama serve' running? Error: {exc}"
         ) from exc
 
+
 def call_ollama_chat(model_name, model_options, player_data):
     """
     Send a prompt to Ollama via ollama.chat and return the response text.
@@ -323,10 +332,11 @@ def call_ollama_chat(model_name, model_options, player_data):
             },
         ],
         options=model_options,
-        keep_alive=-1, # -1 keeps the model pinned in RAM permanently until unloaded
+        keep_alive=-1,  # -1 keeps the model pinned in RAM permanently until unloaded
     )
     raw = response["message"]["content"]
     return raw
+
 
 async def score_thread(model_name, model_options, player_data):
     async with SEMAPHORE:
@@ -361,19 +371,18 @@ async def score_thread(model_name, model_options, player_data):
             )
             return None
 
+
 async def invoke_ollama(model_name, model_options, players):
-    tasks = [
-        score_thread(model_name, model_options, p)
-        for p in players
-    ]
+    tasks = [score_thread(model_name, model_options, p) for p in players]
 
     results = await asyncio.gather(*tasks)
     return results
 
+
 def unload_ollama_model(model_name: str) -> None:
     """
     Evict a model from Ollama's memory by sending a keep_alive=0 request.
-    Call this between LLaMA and Mistral to free RAM on a 16GB machine.
+    Call this between LLaMA and Mistral to free RAM.
     """
     try:
         ollama.chat(
@@ -393,26 +402,27 @@ def unload_ollama_model(model_name: str) -> None:
 # Parsing & Pydantic validation
 # ---------------------------------------------------------------------------
 def extract_json_array(raw: str, batch_index: int) -> list[dict]:
-    """Extract JSON array from raw LLM output. 
+    """Extract JSON array from raw LLM output.
     Handles both array [...] and single object {...} responses."""
-    
+
     # Try array first
     start = raw.find("[")
     end = raw.rfind("]")
     if start != -1 and end != -1:
-        return json.loads(raw[start:end + 1])
-    
+        return json.loads(raw[start : end + 1])
+
     # Fall back to single object
     start = raw.find("{")
     end = raw.rfind("}")
     if start != -1 and end != -1:
-        obj = json.loads(raw[start:end + 1])
+        obj = json.loads(raw[start : end + 1])
         return [obj]  # wrap in list for consistent downstream handling
-    
+
     raise ValueError(
         f"Batch {batch_index}: No JSON array or object found in output. "
         f"Preview: {raw[:300]}"
     )
+
 
 def validate_records(
     raw_output: Any,
@@ -458,7 +468,10 @@ def validate_records(
     if received_size != expected_size:
         log.warning(
             "[%s] Batch %d: size mismatch (expected=%d, received=%d)",
-            model_name, batch_index, expected_size, received_size,
+            model_name,
+            batch_index,
+            expected_size,
+            received_size,
         )
 
         if strict:
@@ -491,7 +504,9 @@ def validate_records(
     # Final sanity checks
     # -----------------------------
     if len(valid_records) == 0:
-        log.error("[%s] Batch %d: all records failed validation", model_name, batch_index)
+        log.error(
+            "[%s] Batch %d: all records failed validation", model_name, batch_index
+        )
 
     log.info(
         "[%s] Batch %d: valid=%d invalid=%d expected=%d received=%d",
@@ -504,6 +519,7 @@ def validate_records(
     )
 
     return valid_records
+
 
 # ---------------------------------------------------------------------------
 # Polars cleanup
@@ -527,7 +543,9 @@ def clean_with_polars(records: list[dict], model_name: str) -> list[dict]:
         log.warning("clean_with_polars: no records to clean for model=%s", model_name)
         return []
 
-    log.info("Cleaning %d records with Polars for model=%s...", len(records), model_name)
+    log.info(
+        "Cleaning %d records with Polars for model=%s...", len(records), model_name
+    )
 
     generated_at = datetime.now()
 
@@ -537,15 +555,14 @@ def clean_with_polars(records: list[dict], model_name: str) -> list[dict]:
         # Ensure date column is typed correctly before any operations
         .with_columns(pl.col("match_week_monday").cast(pl.Date))
         # Cast, clamp and round all score columns
-        .with_columns([
-            pl.col(c).cast(pl.Float64).clip(0.0, 10.0).round(2).alias(c)
-            for c in SCORE_COLUMNS
-        ])
+        .with_columns(
+            [
+                pl.col(c).cast(pl.Float64).clip(0.0, 10.0).round(2).alias(c)
+                for c in SCORE_COLUMNS
+            ]
+        )
         # Truncate reasoning
-        .with_columns([
-            pl.col(c).str.slice(0, 500).alias(c)
-            for c in REASONING_COLUMNS
-        ])
+        .with_columns([pl.col(c).str.slice(0, 500).alias(c) for c in REASONING_COLUMNS])
         # Sort before dedup so we deterministically keep the highest overall_score
         .sort("overall_score", descending=True)
         .unique(subset=["player_hash_id"], keep="first")
@@ -557,20 +574,24 @@ def clean_with_polars(records: list[dict], model_name: str) -> list[dict]:
         # Compute md5 hash — build the raw string natively in Polars,
         # then apply hashlib only on the single concatenated string column
         .with_columns(
-            pl.concat_str([
-                pl.col("player_hash_id"),
-                pl.lit("_"),
-                pl.col("match_week_monday").cast(pl.String),
-                pl.lit("_"),
-                pl.col("llm_model"),
-            ])
-            .map_elements(lambda s: hashlib.md5(s.encode()).hexdigest(), return_dtype=pl.String)
+            pl.concat_str(
+                [
+                    pl.col("player_hash_id"),
+                    pl.lit("_"),
+                    pl.col("match_week_monday").cast(pl.String),
+                    pl.lit("_"),
+                    pl.col("llm_model"),
+                ]
+            )
+            .map_elements(
+                lambda s: hashlib.md5(s.encode()).hexdigest(), return_dtype=pl.String
+            )
             .alias("player_profile_hash_id")
         )
         .sort("player_profile_hash_id")
     )
 
-    log.info("Polars cleanup done — %d rows remaining.", df.height)
+    log.info("Polars cleanup done — %d rows", df.height)
     return df.to_dicts()
 
 
@@ -578,7 +599,7 @@ def clean_with_polars(records: list[dict], model_name: str) -> list[dict]:
 # Batch helpers
 # ---------------------------------------------------------------------------
 def make_batches(players: list[dict], batch_size: int) -> list[list[dict]]:
-    return [players[i: i + batch_size] for i in range(0, len(players), batch_size)]
+    return [players[i : i + batch_size] for i in range(0, len(players), batch_size)]
 
 
 def invoke_api_with_retry(client, model_key, model_name, prompt, model_options):
@@ -611,7 +632,7 @@ def invoke_api_with_retry(client, model_key, model_name, prompt, model_options):
                 config=model_options,
             )
 
-            return response.text #response.usage_metadata for tokens consumed
+            return response.text  # response.usage_metadata for tokens consumed
 
         elif model_key == "groq":
             response = client.chat.completions.create(
@@ -624,7 +645,9 @@ def invoke_api_with_retry(client, model_key, model_name, prompt, model_options):
                 max_completion_tokens=model_options.get("max_completion_tokens", 2048),
                 top_p=model_options.get("top_p", 0.95),
                 reasoning_effort=model_options.get("reasoning_effort", "low"),
-                response_format=model_options.get("response_format", {"type": "json_object"})
+                response_format=model_options.get(
+                    "response_format", {"type": "json_object"}
+                ),
             )
             return response.choices[0].message.content
 
@@ -648,10 +671,14 @@ def invoke_api_with_retry(client, model_key, model_name, prompt, model_options):
                 if attempt == MAX_RETRIES:
                     raise
 
-                wait = 2 ** attempt * 5
+                wait = 2**attempt * 5
                 log.info(
                     "[%s] Retryable error (code=%s). Retrying in %ss... (%d/%d)",
-                    model_key, code, wait, attempt + 1, MAX_RETRIES
+                    model_key,
+                    code,
+                    wait,
+                    attempt + 1,
+                    MAX_RETRIES,
                 )
                 time.sleep(wait)
                 continue
@@ -661,8 +688,7 @@ def invoke_api_with_retry(client, model_key, model_name, prompt, model_options):
             # -----------------------------
             if code in (400, 401, 403, 404):
                 log.error(
-                    "[%s] Non-retryable error (code=%s): %s",
-                    model_key, code, message
+                    "[%s] Non-retryable error (code=%s): %s", model_key, code, message
                 )
                 raise
 
@@ -672,10 +698,15 @@ def invoke_api_with_retry(client, model_key, model_name, prompt, model_options):
             if attempt == MAX_RETRIES:
                 raise
 
-            wait = 2 ** attempt * 5
+            wait = 2**attempt * 5
             log.warning(
                 "[%s] Unknown error (code=%s). Retrying in %ss... (%d/%d) | %s",
-                model_key, code, wait, attempt + 1, MAX_RETRIES, message
+                model_key,
+                code,
+                wait,
+                attempt + 1,
+                MAX_RETRIES,
+                message,
             )
             time.sleep(wait)
 
@@ -704,11 +735,13 @@ async def run_model_pipeline(
         check_ollama_model(model_name)
         raw_output = await invoke_ollama(model_name, model_options, input_data)
         raw_output = [r for r in raw_output if r is not None]
-        #Flatten the list of lists (since the prompt is  batch of 1)
+        # Flatten the list of lists (since the prompt is  batch of 1)
         raw_output = [
             item
-            for sublist in raw_output if isinstance(sublist, list)
-            for item in sublist if isinstance(item, dict)
+            for sublist in raw_output
+            if isinstance(sublist, list)
+            for item in sublist
+            if isinstance(item, dict)
         ]
         all_records = validate_records(
             raw_output=raw_output,
@@ -716,10 +749,7 @@ async def run_model_pipeline(
             model_name=model_name,
             strict=False,  # individual failures already handled in score_thread
         )
-        log.info(
-            "[%s] complete. Total: %d records.",
-            model_key, len(all_records),
-        )
+        unload_ollama_model(model_name)
     else:
         if model_key == "gemini":
             client = genai.Client(api_key=GOOGLE_AI_API_KEY)
@@ -729,39 +759,55 @@ async def run_model_pipeline(
                 top_p=model_options["top_p"],
                 top_k=model_options["top_k"],
                 max_output_tokens=model_options["max_output_tokens"],
-                response_mime_type=model_options["response_mime_type"],  
+                response_mime_type=model_options["response_mime_type"],
                 thinking_config=types.ThinkingConfig(
-                    thinking_level=model_options.get("thinking_config", {}).get("thinking_level", "low").lower()
+                    thinking_level=model_options.get("thinking_config", {})
+                    .get("thinking_level", "low")
+                    .lower()
                 ),
-                safety_settings=[types.SafetySetting(category=s["category"], threshold=s["threshold"]) for s in model_safety_settings],
+                safety_settings=[
+                    types.SafetySetting(
+                        category=s["category"], threshold=s["threshold"]
+                    )
+                    for s in model_safety_settings
+                ],
                 system_instruction=SYSTEM_INSTRUCTION,
             )
 
         elif model_key == "groq":
             client = Groq(api_key=GROQ_API_KEY)
 
-
         # Split based on batch size
         batches = make_batches(input_data, batch_size)
 
         log.info(
             "Model: %s | Players: %d | Batch size: %d | Total batches: %d",
-            model_name, len(input_data), batch_size, len(batches),
+            model_name,
+            len(input_data),
+            batch_size,
+            len(batches),
         )
 
         for idx, batch in enumerate(batches, start=1):
             log.info(
                 "[%s] Batch %d/%d — %d players...",
-                model_key, idx, len(batches), len(batch),
+                model_key,
+                idx,
+                len(batches),
+                len(batch),
             )
             try:
                 prompt = build_prompt(batch)
                 if model_key == "gemini":
-                    raw_output = invoke_api_with_retry(client, model_key, model_name, prompt, GENERATION_CONFIG)
-                    time.sleep(60.0 / GOOGLE_RPM) # Manage rate limit
+                    raw_output = invoke_api_with_retry(
+                        client, model_key, model_name, prompt, GENERATION_CONFIG
+                    )
+                    time.sleep(60.0 / GOOGLE_RPM)  # Manage rate limit
                 elif model_key == "groq":
-                    raw_output = invoke_api_with_retry(client, model_key, model_name, prompt, model_options)
-                    time.sleep(60.0 / GROQ_RPM) # Manage rate limit
+                    raw_output = invoke_api_with_retry(
+                        client, model_key, model_name, prompt, model_options
+                    )
+                    time.sleep(60.0 / GROQ_RPM)  # Manage rate limit
 
                 raw_list = extract_json_array(raw_output, idx)
                 valid_records = validate_records(
@@ -774,16 +820,27 @@ async def run_model_pipeline(
                 all_records.extend(valid_records)
                 log.info(
                     "[%s] Batch %d complete. Running total: %d records.",
-                    model_key, idx, len(all_records),
+                    model_key,
+                    idx,
+                    len(all_records),
                 )
             except Exception as exc:
                 log.error(
                     "[%s] Batch %d failed — skipping. Error: %s",
-                    model_key, idx, exc, exc_info=True,
+                    model_key,
+                    idx,
+                    exc,
+                    exc_info=True,
                 )
 
-    log.info("=== %s finished. Total valid records: %d ===", model_key, len(all_records))
+    log.info(
+        "=== Completed %s (%s). Total valid records: %d ===",
+        model_key,
+        model_name,
+        len(all_records),
+    )
     return all_records
+
 
 # ---------------------------------------------------------------------------
 # Main pipeline
@@ -815,7 +872,7 @@ async def main() -> None:
             validated_output = await run_model_pipeline(
                 model_key=llm_model_key,
                 model_cfg=llm_model_cfg,
-                input_data=players_data
+                input_data=players_data,
             )
 
             # Polars cleanup + DB insert
@@ -823,12 +880,12 @@ async def main() -> None:
             insert_player_profiles(cur, clean_df, model_name=llm_model_name)
 
             log.info(
-                "Inserted/updated %d rows for model=%s",
+                "DB Insert/Update completed - %d rows for model=%s",
                 len(clean_df),
                 llm_model_name,
             )
 
-            time.sleep(15) # Wait to free up resources before starting next model
+            time.sleep(15)  # Wait to free up resources before starting next model
             log.info("=" * 50)
 
         conn.commit()
@@ -856,6 +913,7 @@ async def main() -> None:
         if conn is not None:
             conn.close()
         gc.collect()
+
 
 if __name__ == "__main__":
     asyncio.run(main())

@@ -5,10 +5,10 @@ load_dotenv()
 
 # ── Config ────────────────────────────────────────────────────
 DB_CONFIG = {
-    "host":     os.getenv("POSTGRES_HOST",     "localhost"),
-    "port":     int(os.getenv("POSTGRES_PORT", 5432)),
-    "dbname":   os.getenv("POSTGRES_NAME",     "tennis"),
-    "user":     os.getenv("POSTGRES_USER",     "postgres"),
+    "host": os.getenv("POSTGRES_HOST", "localhost"),
+    "port": int(os.getenv("POSTGRES_PORT", 5432)),
+    "dbname": os.getenv("POSTGRES_NAME", "tennis"),
+    "user": os.getenv("POSTGRES_USER", "postgres"),
     "password": os.getenv("POSTGRES_PASSWORD", ""),
 }
 
