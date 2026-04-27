@@ -89,6 +89,7 @@ python master.py
 ```
 
 **Power BI - Weekly Score Trends:**    
+![](images/weekly_trend_player_scores.jpeg)   
 
 **Database Schema Design:**    
 ![](images/tennis_postgresdb_design.jpg)   
