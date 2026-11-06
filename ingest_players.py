@@ -21,7 +21,7 @@ import requests
 import pandas as pd
 import psycopg2
 from psycopg2.extras import execute_values
-from config import DB_CONFIG, SCHEMA
+from config import DB_CONFIG, SCHEMA, DS_GITHUB_USERNAME, DS_REPO_NAME, DS_BRANCH
 
 # ── Logging ───────────────────────────────────────────────────
 logging.basicConfig(
@@ -33,9 +33,7 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 # ── Config ────────────────────────────────────────────────────
-PLAYERS_URL = (
-    "https://raw.githubusercontent.com/JeffSackmann/tennis_atp/master/atp_players.csv"
-)
+PLAYERS_URL = f"https://raw.githubusercontent.com/{DS_GITHUB_USERNAME}/{DS_REPO_NAME}/{DS_BRANCH}/data_source/atp_players.csv"
 
 CSV_COLUMNS = [
     "atp_id",

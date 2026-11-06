@@ -20,7 +20,7 @@ from datetime import datetime
 import psycopg2
 from psycopg2.extras import execute_values
 import hashlib
-from config import DB_CONFIG, SCHEMA
+from config import DB_CONFIG, SCHEMA, DS_GITHUB_USERNAME, DS_REPO_NAME, DS_BRANCH
 
 # ── Logging ───────────────────────────────────────────────────
 logging.basicConfig(
@@ -34,8 +34,8 @@ log = logging.getLogger(__name__)
 # -----------------------------
 # Config
 # -----------------------------
-OVERVIEW_URL = "https://raw.githubusercontent.com/JeffSackmann/tennis_MatchChartingProject/master/charting-m-stats-Overview.csv"
-NET_URL = "https://raw.githubusercontent.com/JeffSackmann/tennis_MatchChartingProject/master/charting-m-stats-NetPoints.csv"
+OVERVIEW_URL = f"https://raw.githubusercontent.com/{DS_GITHUB_USERNAME}/{DS_REPO_NAME}/{DS_BRANCH}/data_source/charting-m-stats-Overview.csv"
+NET_URL = f"https://raw.githubusercontent.com/{DS_GITHUB_USERNAME}/{DS_REPO_NAME}/{DS_BRANCH}/data_source/charting-m-stats-NetPoints.csv"
 
 # -----------------------------
 # Columns

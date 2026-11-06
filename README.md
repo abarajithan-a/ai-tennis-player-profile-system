@@ -93,3 +93,12 @@ python master.py
 
 **Database Schema Design:**    
 ![](images/tennis_postgresdb_design.jpg)   
+
+## Attribution and license
+
+To ensure cloud independence and long-term code stability, this project explicitly hosts a curated subset of tennis match data within its own project layout. All data here was collected and compiled by Jeff Sackmann and is redistributed under the same license he releases it under: Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0). See LICENSE
+
+*   **Custom Pipeline Location:** `/data_source` (Unique to this repository)
+*   **Original Data Source:** [Jeff Sackmann's tennis_atp Repository](https://github.com/JeffSackmann/tennis_atp) and [tennis_MatchChartingProject Repository](https://github.com/JeffSackmann/tennis_MatchChartingProject)
+*   **Data Lineage:** Raw CSV files were recovered from community archival snapshots (e.g., [Aneeshers/tennis-sackmann-archive](https://github.com/Aneeshers/tennis-sackmann-archive)) and restructured into this folder.
+*   **Licensing:** All data files remain the property of Jeff Sackmann / Tennis Abstract and are used under the **Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0)** license.
