@@ -21,7 +21,7 @@ from datetime import datetime
 import psycopg2
 from psycopg2.extras import execute_values
 import hashlib
-from config import DB_CONFIG, SCHEMA
+from config import DB_CONFIG, SCHEMA, DS_GITHUB_USERNAME, DS_REPO_NAME, DS_BRANCH
 
 # ── Logging ───────────────────────────────────────────────────
 logging.basicConfig(
@@ -36,9 +36,7 @@ log = logging.getLogger(__name__)
 # Config
 # -----------------------------
 START_YEAR = 2020
-GITHUB_BASE_URL = (
-    "https://raw.githubusercontent.com/JeffSackmann/tennis_atp/master/atp_matches_"
-)
+GITHUB_BASE_URL = f"https://raw.githubusercontent.com/{DS_GITHUB_USERNAME}/{DS_REPO_NAME}/{DS_BRANCH}/data_source/atp_matches_"
 
 # -----------------------------
 # Columns
